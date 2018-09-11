@@ -1,0 +1,10 @@
+{
+    "name": "hightemp/lib-tensor-flow-php",
+    "description": "PHP library based on https://github.com/tensorflow/tfjs",
+    "type": "library",
+    "license": "MIT",
+    "require": {},
+    "autoload": {
+        "psr-4": {"libTensorFlowPHP\\": "src/"}
+    }
+}
