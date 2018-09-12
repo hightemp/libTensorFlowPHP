@@ -6,6 +6,22 @@ use Exception;
 use libTensorFlowPHP\Console;
 use libTensorFlowPHP\Core\Utilities;
 
+class TensorData 
+{
+  public $dataId;
+  public $values;
+}
+
+interface TensorTracker 
+{
+  function fnRegisterTensor($oT);
+  function fnDisposeTensor($oT);
+  function fnWrite($mDataId, $aValues);
+  function fnRead($mDataId);
+  function fnReadSync($mDataId);
+  function fnRegisterVariable($oV);
+}
+
 class TensorBuffer 
 {
   public $size;
@@ -165,6 +181,11 @@ class Tensor
     if ($aValues != null) {
       self::$fnTrackerFn()->fnWrite($this->dataId, $aValues);
     }
+  }
+  
+  public static function fnMake($aShape, $oData, $sDtype)
+  {
+    return new Tensor($aShape, $sDtype, $oData->values, $oData->dataId);
   }
 }
 
