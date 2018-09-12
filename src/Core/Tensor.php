@@ -22,6 +22,10 @@ interface TensorTracker
   function fnRegisterVariable($oV);
 }
 
+interface OpHandler {
+
+}
+
 class TensorBuffer 
 {
   public $size;
@@ -186,6 +190,54 @@ class Tensor
   public static function fnMake($aShape, $oData, $sDtype)
   {
     return new Tensor($aShape, $sDtype, $oData->values, $oData->dataId);
+  }
+  
+  public function fnFlatten()
+  {
+    $this->fnThrowIfDisposed();
+    return $this->fnAs1D();
+  }
+  
+  public function fnAsScalar()
+  {
+    $this->fnThrowIfDisposed();
+    Utilities::fnAssert($this->size === 1, 'The array must have only 1 element.');
+    return $this->fnReshape([]);
+  }
+
+  public function fnAs1D()
+  {
+    $this->fnThrowIfDisposed();
+    return $this->fnReshape([$this->size]);
+  }
+  
+  public function fnAs2D($iRows, $iColumns)
+  {
+    $this->fnThrowIfDisposed();
+    return $this->fnReshape([$iRows, $iColumns]);
+  }
+
+  public function fnAs3D($iRows, $iColumns, $iDepth)
+  {
+    $this->fnThrowIfDisposed();
+    return $this->fnReshape([$iRows, $iColumns, $iDepth]);
+  }
+
+  public function fnAs4D($iRows, $iColumns, $iDepth, $iDepth2)
+  {
+    $this->fnThrowIfDisposed();
+    return $this->fnReshape([$iRows, $iColumns, $iDepth, $iDepth2]);
+  }
+
+  public function fnAsType($sDtype)
+  {
+    $this->fnThrowIfDisposed();
+    return self::$opHandler->fnCast($this, $sDtype);
+  }
+  
+  public function fnRank()
+  {
+    return count($this->shape);
   }
 }
 
