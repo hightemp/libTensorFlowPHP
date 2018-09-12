@@ -53,7 +53,14 @@ class Console
     'blink'            => 25,
   ];
   
+  public static $bUseColors = true;
+  
   public static function warn(...$aArguments)
+  {
+    echo $aArguments[0];
+  }
+  
+  public static function error(...$aArguments)
   {
     echo $aArguments[0];
   }
@@ -73,33 +80,37 @@ class Console
         $aParams = [];
         $sResult = '';
         
-        $aParsedParams = explode(',', key($aArguments));
-        $aParams = [];
-        foreach ($aParsedParams as $mParam) {
-          $mParam = explode(':', $mParam);
-          $aParams[$mParam[0]] = $mParam[1];
+        if (self::$bUseColors) {
+          $aParsedParams = explode(',', key($aArguments));
+          $aParams = [];
+          foreach ($aParsedParams as $mParam) {
+            $mParam = explode(':', $mParam);
+            $aParams[$mParam[0]] = $mParam[1];
+          }
+
+          if (isset($aParams['c']))
+            $sResult .= "\033[".self::$aColors[$aParams['c']]."m";
+
+          if (isset($aParams['b']))
+            $sResult .= "\033[".self::$aBgColors[$aParams['b']]."m";
+
+          if (isset($aParams['s']))
+            $sResult .= "\033[".self::$aStyles[$aParams['s']]."m";
         }
-          
-        if (isset($aParams['c']))
-          $sResult .= "\x1b[".self::$aColors[$aParams['c']]."m";
         
-        if (isset($aParams['b']))
-          $sResult .= "\x1b[".self::$aBgColors[$aParams['b']]."m";
-
-        if (isset($aParams['s']))
-          $sResult .= "\x1b[".self::$aStyles[$aParams['s']]."m";
-
         $sResult = json_encode(current($aArguments));
         
-        if (isset($aParams['c']))
-          $sResult .= "\x1b[39m";
+        if (self::$bUseColors) {
+          if (isset($aParams['c']))
+            $sResult .= "\033[39m";
+
+          if (isset($aParams['b']))
+            $sResult .= "\033[49m";
+
+          if (isset($aParams['s']))
+            $sResult .= "\033[".self::$aStylesUnsetFlags[$aParams['s']]."m";
+        }
         
-        if (isset($aParams['b']))
-          $sResult .= "\x1b[49m";
-
-        if (isset($aParams['s']))
-          $sResult .= "\x1b[".self::$aStylesUnsetFlags[$aParams['s']]."m";
-
         next($aArguments);
         
         return $sResult;

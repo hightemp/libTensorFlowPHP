@@ -20,6 +20,8 @@ class Profiler
   public function fnProfileKernel($sName, $fnF)
   {
     $mResult;
+    $fnF = Closure::bindTo($fnF, $this);
+    
     $fnHoldResultWrapperFn = function() use (&$mResult, $fnF) {
       $mResult = $fnF();
     };
@@ -36,7 +38,6 @@ class Profiler
           $this->logger->fnLogKernelProfile($sName, $oR, $aVals, $oTiming->kernelMs);
         }
       );
-      
     }
 
     return $mResult;

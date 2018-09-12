@@ -4,6 +4,7 @@ namespace libTensorFlowPHP\Core;
 
 use libTensorFlowPHP\Core\Profiler;
 use Exception;
+use Closure;
 
 interface TensorManager {
   function fnRegisterTensor($oTensor);
@@ -50,43 +51,191 @@ class Environment implements TensorManager
     ]; 
   }
   
-  tidy<T extends TensorContainer>(
-      nameOrFn: string|ScopeFn<T>, fn?: ScopeFn<T>, gradMode = false): T {
+  public static function fnTidy($mNameOrFn, $fnFn, $bGradMode = false)
+  {
     // gradMode Primarily for internal use during backprop
     //          If true, will start a tape if it is the outermost tidy.
 
-    let name: string = null;
-    if (fn == null) {
+    $sName = null;
+    
+    if ($fnFn == null) {
       // Called with only 1 argument.
-      if (typeof nameOrFn !== 'function') {
-        throw new Error('Please provide a function to tidy()');
+      if (is_callable($mNameOrFn)) {
+        throw new Exception('Please provide a function to tidy()');
       }
-      fn = nameOrFn;
+      $fnFn = $mNameOrFn;
     } else {
       // Called with 2 arguments.
-      if (typeof nameOrFn !== 'string' && !(nameOrFn instanceof String)) {
-        throw new Error(
-            'When calling with two arguments, the first argument ' +
+      if (is_string($mNameOrFn)) {
+        throw new Exception(
+            'When calling with two arguments, the first argument ' .
             'to tidy() must be a string');
       }
-      if (typeof fn !== 'function') {
-        throw new Error(
-            'When calling with two arguments, the 2nd argument ' +
+      if (is_callable($fnFn)) {
+        throw new Exception(
+            'When calling with two arguments, the 2nd argument ' .
             'to tidy() must be a function');
       }
-      name = nameOrFn as string;
+      $sName = $mNameOrFn;
       // TODO(nsthorat,smilkov): Do operation logging and performance
       // profiling.
     }
-    let result: T;
-    return this.scopedRun(
-        () => this.startScope(name, gradMode),
-        () => this.endScope(result, gradMode), () => {
-          result = fn();
+    $fnResult;
+    
+    $fnFunction1 = function() use ($sName, $bGradMode)
+    {
+      return $this->fnStartScope($sName, $bGradMode);
+    };
+    
+    $fnFunction2 = function() use ($fnResult, $bGradMode, $fnFn)
+    {
+      $this->fnEndScope($fnResult, $bGradMode);
+      return function () use ($fnFn)
+      {
+        $mResult = $fnFn();
+        /*
           if (result instanceof Promise) {
             console.error('Cannot return a Promise inside of tidy.');
           }
-          return result;
-        });
+         */
+        return $mResult;
+      };
+    };
+    
+    return $this->fnScopedRun(
+      $fnFunction1,
+      $fnFunction2
+    );
   }
+  
+  public function fnScopedRun($fnStart, $fnEnd, $fnF)
+  {
+    $fnStart = Closure::bindTo($fnStart, $this);
+    $fnEnd = Closure::bindTo($fnEnd, $this);
+    $fnF = Closure::bindTo($fnF, $this);
+    
+    $fnStart();
+    try {
+      $mRes = $fnF();
+      $fnEnd();
+      return $mRes;
+    } catch (Exception $oException) {
+      $fnEnd();
+      throw $oException;
+    }
+  }
+  
+  public function fnRunKernel($fnForwardFunc, $mInputs, $fnBackwardsFunc)
+  {
+    $mResult;
+    $aSaved = [];
+    $fnSaveFunc = function($mX) use ($aSaved)
+    {
+      array_push($aSaved, $mX);
+      return $mX;
+    };
+    $sScopeName = $this->activeScope->name;
+    $iStartingBytecount = $this->numBytes;
+    $iStartingNumTensors = $this->numTensors;
+
+    $fnFunction1 = function()
+    {
+      return $this->customGradientDepth++;
+    };
+
+    $fnFunction2 = function()
+    {
+      return $this->customGradientDepth--;
+    };
+
+    $fnFunction3 = function() use ($fnForwardFunc, &$mResult, $sScopeName, $fnSaveFunc)
+    {
+      if (!$this->fnDebugMode()) {
+        $mResult = $fnForwardFunc($this->backend, $fnSaveFunc);
+      } else {
+        $fnFunction1 = function() use ($fnForwardFunc)
+        {
+          $fnForwardFunc($this->backend, $fnSaveFunc);
+        };
+        $mResult = $this->profiler->fnProfileKernel(
+          $sScopeName, 
+          $fnFunction1
+        );
+      }      
+    };
+
+    // Stop recording to a tape when running a kernel.
+    $this->fnScopedRun(
+      $fnFunction1, 
+      $fnFunction2,
+      $fnFunction3
+    );
+
+    if ($this->fnShouldRecord()) {
+      $aTapeNode = [
+        'id' => $this->nextTapeNodeId++,
+        'name' => $sScopeName,
+        'inputs' => $mInputs,
+        'outputs' => is_array($mResult) ? $mResult : [$mResult]
+      ];
+      if ($fnBackwardsFunc != null) {
+        $aTapeNode['gradient'] = function ($mDy) use ($mDy, $aSaved)
+        {
+          $fnBackwardsFunc($mDy, $aSaved);
+        };
+      }
+      array_push($this->activeTape, $aTapeNode);
+    }
+
+    if ($this->profiling) {
+      array_push($this->activeProfile->kernels, [
+        'name' => $sScopeName,
+        'bytesAdded' => $this->numBytes - $iStartingBytecount,
+        'totalBytesSnapshot' => $this->numBytes,
+        'tensorsAdded' => $this->numTensors - $iStartingNumTensors,
+        'totalTensorsSnapshot' => $this->numTensors,
+        'inputShapes' => array_map(function($v) { return $v->shape; }, $mInputs),
+        'outputShape' => is_array($mResult) ?
+          array_map(function($v) { return $v->shape; }, $mResult) :
+          $mResult->shape
+      ]);
+    }
+
+    return $mResult;
+  }
+  
+  public function fnRegisterTensor($oA) 
+  {
+    $iRefCount =
+      $this->refCounter->fnHas($oA->dataId) ? 
+        $this->refCounter->fnGet($oA->dataId) : 
+        0;
+    $this->numTensors++;
+    if ($iRefCount === 0) {
+      $this->numDataBuffers++;
+
+      // Don't count bytes for complex numbers as they are counted by their
+      // components.
+      if ($oA->dtype !== 'complex64') {
+        $this->numBytes +=
+          Utilities::fnSizeFromShape($oA->shape) *
+          Utilities::fnBytesPerElement($oA->dtype);
+      }
+
+      $this->backend->fnRegister($oA->dataId, $oA->shape, $oA->dtype);
+    }
+    $this->refCounter->fnSet($oA->dataId, $iRefCount + 1);
+    if (!($oA instanceof Variable)) {
+      $this->fnTrack(a);
+    }
+  }  
+  
+  public function fnRegisterVariable($mV)
+  {
+    if (this.registeredVariables[v.name] != null) {
+      throw new Error(`Variable with name ${v.name} was already registered`);
+    }
+    this.registeredVariables[v.name] = v;
+  }
+
 }
