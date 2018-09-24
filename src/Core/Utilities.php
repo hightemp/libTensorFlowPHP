@@ -2,6 +2,8 @@
 
 namespace libTensorFlowPHP\Core;
 
+use libTensorFlowPHP\Core\Tensor;
+use libTensorFlowPHP\Core\TapeNode;
 use Exception;
 
 class Utilities
@@ -577,7 +579,7 @@ class Utilities
     }
   }
   
-  public static function now()
+  public static function fnNow()
   {
     /*
     if (typeof performance !== 'undefined') {
@@ -593,5 +595,258 @@ class Utilities
      * 
      */
     return microtime(true);
+  }
+  
+  public static function fnAssertTypesMatch($oA, $oB)
+  {
+    self::fnAssert(
+      $oA->dtype === $oB->dtype, 
+      "The dtypes of the first({$oA->dtype}) and" .
+      " second({$oB->dtype}) input must match"
+    );
+  }
+
+  public static function fnIsTensorInList($oTensor, $aTensorList)
+  {
+    for ($iI = 0; $iI < count($aTensorList); $iI++) {
+      if ($aTensorList[$iI]->id === $oTensor->id) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  public static function fnFlattenNameArrayMap($aNameArrayMap, $aKeys)
+  {
+    $aXs = [];
+    if ($aNameArrayMap instanceof Tensor) {
+      array_push($aXs, $aNameArrayMap);
+    } else {
+      $aXMap = $aNameArrayMap;
+      for ($iI = 0; $iI < count($aKeys); $iI++) {
+        array_push($aXs, $aXMap[$aKeys[$iI]]);
+      }
+    }
+    return $aXs;
+  }
+
+  public static function fnUnflattenToNameArrayMap($aKeys, $aFlatArrays)
+  {
+    if (count($aKeys) !== count($aFlatArrays)) {
+      throw new Exception(
+        "Cannot unflatten Tensor[], keys and arrays are not of same length.");
+    }
+    $aResult = [];
+    for ($iI = 0; $iI < count($aKeys); $iI++) {
+      $aResult[$aKeys[$iI]] = $aFlatArrays[$iI];
+    }
+    return $aResult;
+  }
+
+  /**
+   * Extracts any `Tensor`s found within the provided object.
+   *
+   * @param container an object that may be a `Tensor` or may directly contain
+   *   `Tensor`s, such as a `Tensor[]` or `{key: Tensor, ...}`. In general it
+   *   is safe to pass any object here, except that `Promise`s are not
+   *   supported.
+   * @returns An array of `Tensors` found within the passed object. If the
+   *   argument is simply a `Tensor', a list containing that `Tensor` is
+   *   returned. If the object is not a `Tensor` or does not
+   *   contain `Tensors`, an empty list is returned.
+   */
+  public static function fnGetTensorsInContainer($oResult)
+  {
+    $aList = [];
+    $oSeen = new Set();
+    self::fnWalkTensorContainer($oResult, $aList, $oSeen);
+    return $aList;
+  }
+
+  public static function fnWalkTensorContainer($oContainer, $aList, $oSeen)
+  {
+    if ($oContainer == null) {
+      return;
+    }
+    if ($oContainer instanceof Tensor) {
+      array_push($aList, $oContainer);
+      return;
+    }
+    if (!self::fnIsIterable($oContainer)) {
+      return;
+    }
+    // Iteration over keys works also for arrays.
+    $oIterable = $oContainer;
+    foreach ($oIterable as $sK => $sVal) {
+      if (!$oSeen->fnHas($sVal)) {
+        $oSeen->fnAdd($sVal);
+        self::fnWalkTensorContainer($sVal, $aList, $oSeen);
+      }
+    }
+  }
+
+  // tslint:disable-next-line:no-any
+  public static function fnIsIterable($oObj)
+  {
+    return is_array($oObj) || is_object($oObj);
+  }
+
+  public static function fnGetFilteredNodesXToY($aTape, $aXs, $oY)
+  {
+    // Forward pass to compute all the nodes and Tensors that are transitively a
+    // function of x.
+    $aTensorsFromX = [];
+    $aNodesFromX = [];
+    
+    for ($iI = 0; $iI < count($aXs); $iI++) {
+      $aTensorsFromX[$aXs[$iI]->id] = true;
+    }
+
+    for ($iI = 0; $iI < count($aTape); $iI++) {
+      $oNode = $aTape[$iI];
+      $aNodeInputs = $oNode->inputs;
+      foreach ($aNodeInputs as $sInputName => $oInput) {
+        $bAnyInputFromX = false;
+        for ($iJ = 0; $iJ < count($aXs); $iJ++) {
+          if ($aTensorsFromX[$oInput->id]) {
+            foreach ($oNode->outputs as $oOutput) {
+              $aTensorsFromX[$oOutput->id] = true;
+            }
+            $bAnyInputFromX = true;
+            $aNodesFromX[$oNode->id] = true;
+            break;
+          }
+        }
+
+        if ($bAnyInputFromX) {
+          break;
+        }
+      }
+    }
+
+    // Backward pass to find all of the nodes and Tensors that lead to y.
+    $aTensorsLeadToY = [];
+    $aTensorsLeadToY[$oY->id] = true;
+    $aNodesToY = [];
+
+    for ($iI = count($aTape) - 1; $iI >= 0; $iI--) {
+      $oNode = $aTape[$iI];
+      $aNodeInputs = $oNode->inputs;
+
+      // If any of the outputs lead to y, mark all of the inputs as leading to y.
+      for ($iJ = 0; $iJ < count($oNode->outputs); $iJ++) {
+        if ($aTensorsLeadToY[$oNode->outputs[$iJ]->id]) {
+          foreach ($aNodeInputs as $sInputName => $oV) {
+            $aTensorsLeadToY[$oV->id] = true;
+            $aNodesToY[$oNode->id] = true;
+          }
+          break;
+        }
+      }
+    }
+
+    // Return the paths that come from x and lead to y.
+    $aFilteredTape = [];
+    for ($iI = 0; $iI < count($aTape); $iI++) {
+      $oNode = $aTape[$iI];
+
+      if ($aNodesFromX[$oNode->id] && $aNodesToY[$oNode->id]) {
+        // Prune the inputs from the node that aren't a function of x.
+        $aPrunedInputs = [];
+        foreach ($oNode->inputs as $sInputName => $oNodeInput) {
+          if ($aTensorsFromX[$oNodeInput->id]) {
+            $aPrunedInputs[$sInputName] = $oNodeInput;
+          }
+        }
+
+        // Copy the node and overwrite inputsAndArgs to the pruned version.
+        $oPrunedNode = new TapeNode();
+        $oPrunedNode->inputs = $aPrunedInputs;
+        $oPrunedNode->outputs = $oNode->outputs;
+
+        array_push($aFilteredTape, $oPrunedNode);
+      }
+    }
+
+    return $aFilteredTape;
+  }
+
+  /**
+   * Backpropagate gradients through the filtered TapeNodes.
+   *
+   * @param tensorAccumulatedGradientMap A map of Tensor to its gradient. This map
+   * is mutated by this method.
+   * @param filteredTape The filtered TapeNodes to backprop through.
+   */
+  public static function fnBackpropagateGradients($aTensorAccumulatedGradientMap, $aFilteredTape)
+  {
+    // Walk the tape backward and keep a map of Tensor to its gradient.
+    for ($iI = count($aFilteredTape) - 1; $iI >= 0; $iI--) {
+      $oNode = $aFilteredTape[$iI];
+
+      $aDys = [];
+      foreach ($oNode->outputs as $oO) {
+        $oGradTensor = $aTensorAccumulatedGradientMap[$oO->id];
+        if ($oGradTensor != null) {
+          array_push($aDys, $oGradTensor);
+        } else {
+          // This particular output is not in the back-propagation subgraph, so it
+          // does not affect the final output, thus we put zeros for its dy.
+          $oDy = Tensor::fnMake(
+              $oO->shape, 
+              [ 'values' => self::fnMakeZerosTypedArray($oO->size, $oO->dtype)],
+              $oO->dtype);
+          array_push($aDys, $oDy);
+        }
+      };
+
+      if ($oNode->gradient == null) {
+        throw new Exception(
+            "Cannot compute gradient: gradient function not found " .
+            "for {$oNode->name}.");
+      }
+
+      // Backprop dy through this node and accumulate gradients over the inputs.
+      $aInputGradients =
+          // Grad functions of ops with single outputs expect a dy, while ops
+          // with multiple outputs expect dys (array of dy).
+          $oNode->gradient(count($oNode->outputs) === 1 ? $aDys[0] : $aDys);
+      foreach ($oNode->inputs as $sInputName => $oInput) {
+        if (!isset($aInputGradients[$sInputName])) {
+          throw new Exception(fnFormatString(
+            "Cannot backprop through input $sInputName. " .
+            "Available gradients found: ?:.", 
+            array_keys($aInputGradients)));
+        }
+
+        // Call the gradient function.
+        $oDx = $aInputGradients[$sInputName]();
+        $oX = $oNode->inputs[$sInputName];
+        if (!self::fnArraysEqual($oDx->shape, $oX->shape)) {
+          throw new Exception(
+              "Error in gradient for op {$oNode->name}. The gradient of input " .
+              "'$sInputName' has shape '{$oDx->shape}', which does not match " .
+              "the shape of the input '{$oX->shape}'");
+        }
+
+        if ($aTensorAccumulatedGradientMap[$oX->id] == null) {
+          $aTensorAccumulatedGradientMap[$oX->id] = $oDx;
+        } else {
+          $oCurGradient = $aTensorAccumulatedGradientMap[$oX->id];
+          $aTensorAccumulatedGradientMap[$oX->id] = $oCurGradient->fnAdd($oDx);
+          $oCurGradient->fnDispose();
+        }
+      }
+    }
+  }
+  
+  public static function fnArrayEvery(callable $callback, array $arr) 
+  {
+    foreach ($arr as $element) {
+      if (!$callback($element)) {
+        return FALSE;
+      }
+    }
+    return TRUE;
   }
 }
