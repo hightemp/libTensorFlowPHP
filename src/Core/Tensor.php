@@ -5,6 +5,7 @@ namespace libTensorFlowPHP\Core;
 use Exception;
 use libTensorFlowPHP\Console;
 use libTensorFlowPHP\Core\Utilities;
+use libTensorFlowPHP\Core\OpHandler;
 
 class TensorData 
 {
@@ -20,10 +21,6 @@ interface TensorTracker
   function fnRead($mDataId);
   function fnReadSync($mDataId);
   function fnRegisterVariable($oV);
-}
-
-interface OpHandler {
-
 }
 
 class TensorBuffer 
@@ -147,14 +144,9 @@ class Tensor
   public $strides;
 
   public static $fnTrackerFn = null;
-  public static $oOpHandler = null;
 
   public static function fnSetTensorTracker($fnFn) {
     self::$fnTrackerFn = $fnFn;
-  }
-
-  public static function fnSetOpHandler($oOpHandler) {
-    self::$oOpHandler = $oOpHandler;
   }
   
   function __construct($aShape, $sDtype, $aValues, $mDataId) 
@@ -232,7 +224,7 @@ class Tensor
   public function fnAsType($sDtype)
   {
     $this->fnThrowIfDisposed();
-    return self::$opHandler->fnCast($this, $sDtype);
+    return OpHandler::$opHandler->fnCast($this, $sDtype);
   }
   
   public function fnRank()
